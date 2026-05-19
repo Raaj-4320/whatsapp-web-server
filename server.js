@@ -17,6 +17,61 @@ app.use(cors({
 
 app.use(express.json())
 
+// expose qr.png publicly
+app.use(express.static("."))
+
+const PORT = process.env.PORT || 3000
+
+// =========================
+// DETECT ENVIRONMENT
+// =========================
+
+const isRender =
+  !!process.env.RENDER
+
+console.log("Running on Render:", isRender)
+
+// =========================
+// PUPPETEER CONFIG
+// =========================
+
+const puppeteerConfig = {
+
+  headless: true,
+
+  args: [
+
+    "--no-sandbox",
+
+    "--disable-setuid-sandbox",
+
+    "--disable-dev-shm-usage",
+
+    "--disable-accelerated-2d-canvas",
+
+    "--disable-gpu",
+
+    "--no-first-run",
+
+    "--no-zygote",
+
+    "--single-process",
+
+    "--disable-extensions"
+  ]
+}
+
+// LOCAL WINDOWS ONLY
+if (!isRender) {
+
+  puppeteerConfig.executablePath =
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+}
+
+// =========================
+// WHATSAPP CLIENT
+// =========================
+
 const client = new Client({
 
   authStrategy: new LocalAuth(),
@@ -25,20 +80,12 @@ const client = new Client({
     type: "none"
   },
 
-  puppeteer: {
-
-    headless: false,
-
-    executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage"
-    ]
-  }
+  puppeteer: puppeteerConfig
 })
+
+// =========================
+// EVENTS
+// =========================
 
 client.on("qr", async (qr) => {
 
@@ -49,6 +96,14 @@ client.on("qr", async (qr) => {
   await QRCode.toFile("qr.png", qr)
 
   console.log("Open qr.png and scan it")
+
+  if (isRender) {
+
+    console.log("QR URL:")
+    console.log(
+      `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/qr.png`
+    )
+  }
 })
 
 client.on("authenticated", () => {
@@ -80,6 +135,28 @@ client.on("disconnected", (reason) => {
   console.log(reason)
   console.log("================================")
 })
+
+// =========================
+// HEALTH ROUTES
+// =========================
+
+app.get("/", (req, res) => {
+
+  res.send("WhatsApp server running")
+})
+
+app.get("/healthz", (req, res) => {
+
+  res.json({
+    success: true,
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  })
+})
+
+// =========================
+// SEND INVOICE
+// =========================
 
 app.post("/send-invoice", async (req, res) => {
 
@@ -113,29 +190,60 @@ app.post("/send-invoice", async (req, res) => {
       })
     }
 
-let cleanPhone = customerPhone
-  .replace(/\D/g, "")
+    // =========================
+    // NORMALIZE PHONE
+    // =========================
 
-if (!cleanPhone.startsWith("91")) {
-  cleanPhone = "91" + cleanPhone
-}
+    let cleanPhone = customerPhone
+      .replace(/\D/g, "")
 
-console.log("Normalized Phone:", cleanPhone)
+    if (!cleanPhone.startsWith("91")) {
+      cleanPhone = "91" + cleanPhone
+    }
 
-    const chatId =
-      cleanPhone + "@c.us"
+    console.log("Normalized Phone:", cleanPhone)
 
-    console.log("Downloading invoice from Cloudinary...")
+    // =========================
+    // CHECK NUMBER
+    // =========================
+
+    console.log("Checking WhatsApp number...")
+
+    const numberId =
+      await client.getNumberId(cleanPhone)
+
+    console.log("Number ID Result:")
+    console.log(numberId)
+
+    if (!numberId) {
+
+      throw new Error(
+        "Phone number is not registered on WhatsApp"
+      )
+    }
+
+    // =========================
+    // DOWNLOAD IMAGE
+    // =========================
+
+    console.log("Downloading invoice image...")
 
     const response = await axios.get(pdfUrl, {
-      responseType: "arraybuffer"
+
+      responseType: "arraybuffer",
+
+      timeout: 15000
     })
 
     console.log("Download successful")
-    console.log("Content-Type:", response.headers["content-type"])
+
+    // =========================
+    // CREATE MEDIA
+    // =========================
 
     const base64 =
-      Buffer.from(response.data).toString("base64")
+      Buffer.from(response.data)
+        .toString("base64")
 
     const media = new MessageMedia(
       "image/png",
@@ -143,38 +251,27 @@ console.log("Normalized Phone:", cleanPhone)
       `${invoiceNo}.png`
     )
 
+    // =========================
+    // SEND MESSAGE
+    // =========================
+
     console.log("Sending WhatsApp message...")
-    console.log("Chat ID:", chatId)
 
-console.log("Checking WhatsApp number...")
+    await client.sendMessage(
 
-const numberId = await client.getNumberId(cleanPhone)
+      numberId._serialized,
 
-console.log("Number ID Result:")
-console.log(numberId)
+      media,
 
-if (!numberId) {
-
-  throw new Error(
-    "Phone number is not registered on WhatsApp"
-  )
-}
-
-await client.sendMessage(
-
-  numberId._serialized,
-
-  media,
-
-  {
-    caption:
+      {
+        caption:
 `Hello ${customerName},
 
 Your invoice ${invoiceNo} is attached.
 
 Thank you for shopping with us.`
-  }
-)
+      }
+    )
 
     console.log("================================")
     console.log("Invoice sent successfully")
@@ -198,18 +295,54 @@ Thank you for shopping with us.`
   }
 })
 
-app.listen(3000, async () => {
+// =========================
+// MEMORY LOGGING
+// =========================
+
+setInterval(() => {
+
+  const used =
+    process.memoryUsage()
 
   console.log("================================")
-  console.log("Server running on port 3000")
+  console.log("MEMORY USAGE")
+
+  console.log({
+    rss:
+      Math.round(
+        used.rss / 1024 / 1024
+      ) + " MB",
+
+    heapUsed:
+      Math.round(
+        used.heapUsed / 1024 / 1024
+      ) + " MB"
+  })
+
+  console.log("================================")
+
+}, 1000 * 60 * 10)
+
+// =========================
+// START SERVER
+// =========================
+
+app.listen(PORT, async () => {
+
+  console.log("================================")
+  console.log(`Server running on port ${PORT}`)
   console.log("================================")
 
   client.initialize()
-  .then(() => {
-    console.log("Client initialized")
-  })
-  .catch((err) => {
-    console.log("INITIALIZE ERROR")
-    console.log(err)
-  })
+
+    .then(() => {
+
+      console.log("Client initialized")
+    })
+
+    .catch((err) => {
+
+      console.log("INITIALIZE ERROR")
+      console.log(err)
+    })
 })
