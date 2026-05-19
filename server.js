@@ -128,12 +128,23 @@ client.on("auth_failure", (msg) => {
   console.log("================================")
 })
 
-client.on("disconnected", (reason) => {
+client.on("disconnected", async (reason) => {
 
   console.log("================================")
   console.log("Disconnected")
   console.log(reason)
+  console.log("Reconnecting...")
   console.log("================================")
+
+  try {
+
+    await client.initialize()
+
+  } catch (err) {
+
+    console.log("Reconnect Failed")
+    console.log(err)
+  }
 })
 
 // =========================
@@ -326,6 +337,28 @@ setInterval(() => {
 // =========================
 // START SERVER
 // =========================
+setInterval(async () => {
+
+  try {
+
+    console.log("================================")
+    console.log("KEEP ALIVE PING")
+    console.log("Time:", new Date().toISOString())
+
+    const state =
+      await client.getState()
+
+    console.log("WhatsApp State:", state)
+
+    console.log("================================")
+
+  } catch (err) {
+
+    console.log("KEEP ALIVE ERROR")
+    console.log(err.message)
+  }
+
+}, 1000 * 60 * 5)
 
 app.listen(PORT, async () => {
 
